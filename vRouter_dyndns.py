@@ -4,7 +4,7 @@ import re
 
 
 '''
-Script to automate changing tunnel destination on vEOS Router platform.
+Script to automate changing tunnel destination and local-id on vEOS Router platform.
 
 Example Tunnel Config:
     interface Tunnel0
@@ -14,7 +14,13 @@ Example Tunnel Config:
         tunnel mode gre
         tunnel source interface Ethernet1
         tunnel ipsec profile vrouter
-        tunnel destination 192.0.2.1
+        tunnel destination 192.0.2.2
+
+Example Local-ID Config:
+    ip security
+       ike policy ike-vrouter
+          !! Dyn_src = local.example.com
+          local-id 192.0.2.1
 
 If remote.example.com suddenly resolves to 192.0.2.254, the next time the
 script runs, it will update the tunnel destination field to match.
@@ -49,7 +55,12 @@ regex2 = re.compile('Dyn_dest = (.*)')
 Dyn_tun_dest = re.compile('tunnel destination (.*)')
 #used to find the resolved IP address in a ping.
 capture_resolution = re.compile('PING .*?\(([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3})\)')
-
+#match ike policies used for tunnel.
+ikeProfile = re.compile('ike policy (.*)')
+#identify if local-id is specified.
+localID = re.compile('Dyn_src = (.*)')
+#eval localID
+Dyn_tun_src = re.compile('local-id (.*)')
 
 def main():
     #SESSION SETUP FOR eAPI TO DEVICE, uses unix socket
@@ -83,6 +94,21 @@ def main():
                     # If IPs don't match, push DNS response IP to tunnel dest field.
                     finaloutput = ss.runCmds( 1, [ 'configure', item,
                     '   tunnel destination '+resolved_ip ] )
-
+    ipsec = response['ip security']['cmds']
+    ipseclist = [x for x in ipsec.keys() if ikeProfile.match(x)]
+    for item in ipseclist:
+        for value in ipsec[item]['comments']:
+            if localID.match(value):
+                selfFQDN = localID.match(value).group(1)
+                selfdns_lookup = ss.runCmds(1, ['ping '+selfFQDN+' repeat 1'] )[0]['messages']
+                selfresolved_ip = capture_resolution.match(selfdns_lookup[0]).group(1)
+                config_line = [x for x in ipsec[item]['cmds'] if Dyn_tun_src.match(x)][0]
+                # Grab currently installed tunnel destination IP and store as var.
+                selfcurrent_ip = Dyn_tun_src.match(config_line).group(1)
+                # Check currently installed dest IP vs DNS response IP
+                if selfcurrent_ip != selfresolved_ip:
+                    # If IPs don't match, push DNS response IP to tunnel dest field.
+                    finaloutput = ss.runCmds( 1, [ 'configure', 'ip security', item,
+                    '   local-id '+selfresolved_ip ] )
 if __name__ == "__main__":
     main()
